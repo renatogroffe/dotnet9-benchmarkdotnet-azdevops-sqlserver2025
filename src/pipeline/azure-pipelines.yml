@@ -1,0 +1,142 @@
+resources:
+  containers:
+    - container: sqlserver
+      image: mcr.microsoft.com/mssql/server:2025-CTP2.0-ubuntu-22.04
+      options: --name sqlsrvcontainer
+      networks: 
+      - testes
+      env:
+        SA_PASSWORD: SqlServer2025!
+        ACCEPT_EULA: Y
+        MSSQL_PID: Developer
+      ports:
+        - 1433:1433
+
+variables:
+  # Agent VM image name
+  vmImageName: 'ubuntu-latest'
+
+  # Variáveis para execução dos testes de integração
+  Path_Tests: './src/BenchmarkingDapperEFCoreCRMSqlServer'
+  BaseMaster: 'Server=127.0.0.1,1433;Database=master;User Id=sa;Password=SqlServer2025!;TrustServerCertificate=True;'
+  BaseEFCore: 'Server=127.0.0.1,1433;Database=BaseCRMEF;User Id=sa;Password=SqlServer2025!;TrustServerCertificate=True;'
+  BaseDapper: 'Server=127.0.0.1,1433;Database=BaseCRMDapper;User Id=sa;Password=SqlServer2025!;TrustServerCertificate=True;'
+  BaseDapperContrib: 'Server=127.0.0.1,1433;Database=BaseCRMDapperContrib;User Id=sa;Password=SqlServer2025!;TrustServerCertificate=True;'
+  BaseADO: 'Server=127.0.0.1,1433;Database=BaseCRMADO;User Id=sa;Password=SqlServer2025!;TrustServerCertificate=True;'
+  BaseADOStoredProc: 'Server=127.0.0.1,1433;Database=BaseCRMADOStoredProc;User Id=sa;Password=SqlServer2025!;TrustServerCertificate=True;'
+  Path_ArtifactsBenchmarking: '/src/BenchmarkingDapperEFCoreCRMSqlServer/BenchmarkDotNet.Artifacts/results'
+  ArtifactBenchmarkingHtml: 'BenchmarkingDapperEFCoreCRMSqlServer.Tests.CRMTests-report.html'
+  ArtifactBenchmarkingMarkdown: 'BenchmarkingDapperEFCoreCRMSqlServer.Tests.CRMTests-report-github.md'
+
+stages:
+- stage: Tests
+  displayName: Tests stage
+  variables:
+    - group: benchmarkdotnet
+  jobs:
+  - job: Tests
+    displayName: Tests
+    pool:
+      vmImage: $(vmImageName)
+    services:
+      sqlserver: sqlserver
+    steps:
+    - script: cat /etc/os-release
+      displayName: 'Exibir a versao atual do Ubuntu'
+    - script: |
+        docker images
+        docker container ls
+        echo 'Aguardar por 10s a subida da instancia do SQL Server...'
+        sleep 10s
+        docker container ls
+      displayName: Exibir imagens e container em execução
+    - script: |
+        docker exec sqlsrvcontainer /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "SqlServer2025!" -C -Q "SELECT @@VERSION;"
+      displayName: Exibir versao atual do SQL Server
+    - script: |
+        echo '*** SDKs do .NET intalados ***'
+        dotnet --list-sdks
+        echo '*** Versão assumida como default para o .NET ***'
+        dotnet --version
+      displayName: Exibir versoes instaladas do .NET SDK
+    - task: UseDotNet@2
+      inputs:
+        packageType: 'sdk'
+        version: '9.0.300'
+      displayName: Configurar o uso do .NET 9.0.300
+    - script: |
+        echo '*** SDKs do .NET intalados ***'
+        dotnet --list-sdks
+        echo '*** Versão assumida como default para o .NET ***'
+        dotnet --version
+      displayName: Exibir versoes instaladas do .NET SDK (parte 2)
+    - script: |
+        echo 'No. de Contatos a serem criados para cada registro de Empresa/Companhia:'
+        echo ''
+        echo $(NoContatosPorCompanhia)
+        echo ''
+      displayName: Exibir configuracao com o numero de Contatos a serem criados por Empresa/Companhia
+    - script: |
+        cd $(Path_Tests)
+        echo '*** Arquivos no diretorio do projeto ***'
+        pwd
+        echo ''
+        ls
+        echo ''
+        echo 'Iniciando a execucao dos testes...'
+        echo ''
+        dotnet run --filter BenchmarkingDapperEFCoreCRMSqlServer.Tests.* -c Release
+      displayName: Executar benchmarking com testes de performance comparando alternativas
+      env:
+        BaseMasterConnectionString: $(BaseMaster)
+        BaseEFCoreConnectionString: $(BaseEFCore)
+        BaseDapperConnectionString: $(BaseDapper)
+        BaseDapperContribConnectionString: $(BaseDapperContrib)
+        BaseADOConnectionString: $(BaseADO)
+        BaseADOStoredProcConnectionString: $(BaseADOStoredProc)
+        NumeroContatosPorCompanhia: $(NoContatosPorCompanhia)
+    - task: PublishHtmlReport@1
+      inputs:
+        reportDir: '$(Build.SourcesDirectory)/$(Path_ArtifactsBenchmarking)/$(ArtifactBenchmarkingHtml)'
+      displayName: Publicar resultado no formato HTML
+    - task: PublishMarkdownReports@1
+      inputs:
+        contentPath: '$(Build.SourcesDirectory)/$(Path_ArtifactsBenchmarking)'
+        indexFile: '$(ArtifactBenchmarkingMarkdown)'
+      displayName: Publicar resultado no formato Markdown
+    - script: |
+        cd /opt/mssql-tools/bin/
+        echo '*** Empresas ***'
+        docker exec sqlsrvcontainer /opt/mssql-tools18/bin/sqlcmd -S "127.0.0.1,1433" -U sa -P SqlServer2025! -d master -C -Q "USE BaseCRMEF; SELECT TOP 10 * FROM dbo.Empresas;"
+        echo ''
+        echo '*** Contatos ***'
+        docker exec sqlsrvcontainer /opt/mssql-tools18/bin/sqlcmd -S "127.0.0.1,1433" -U sa -P SqlServer2025! -d master -C -Q "USE BaseCRMEF; SELECT TOP 30 * FROM dbo.Contatos;"
+      condition: always() 
+      displayName: Exibir amostragem de registros criados na base BaseCRMEF
+    - script: |
+        cd /opt/mssql-tools/bin/
+        echo '*** Empresas ***'
+        docker exec sqlsrvcontainer /opt/mssql-tools18/bin/sqlcmd -S "127.0.0.1,1433" -U sa -P SqlServer2025! -d master -C -Q "USE BaseCRMDapper; SELECT TOP 10 * FROM dbo.Empresas;"
+        echo ''
+        echo '*** Contatos ***'
+        docker exec sqlsrvcontainer /opt/mssql-tools18/bin/sqlcmd -S "127.0.0.1,1433" -U sa -P SqlServer2025! -d master -C -Q "USE BaseCRMDapper; SELECT TOP 30 * FROM dbo.Contatos;"
+      condition: always()
+      displayName: Exibir amostragem de registros criados na base BaseCRMDapper
+    - script: |
+        cd /opt/mssql-tools/bin/
+        echo '*** Empresas ***'
+        docker exec sqlsrvcontainer /opt/mssql-tools18/bin/sqlcmd -S "127.0.0.1,1433" -U sa -P SqlServer2025! -d master -C -Q "USE BaseCRMDapperContrib; SELECT TOP 10 * FROM dbo.Empresas;"
+        echo ''
+        echo '*** Contatos ***'
+        docker exec sqlsrvcontainer /opt/mssql-tools18/bin/sqlcmd -S "127.0.0.1,1433" -U sa -P SqlServer2025! -d master -C -Q "USE BaseCRMDapperContrib; SELECT TOP 30 * FROM dbo.Contatos;"
+      condition: always() 
+      displayName: Exibir amostragem de registros criados na base BaseCRMDapperContrib
+    - script: |
+        cd /opt/mssql-tools/bin/
+        echo '*** Empresas ***'
+        docker exec sqlsrvcontainer /opt/mssql-tools18/bin/sqlcmd -S "127.0.0.1,1433" -U sa -P SqlServer2025! -d master -C -Q "USE BaseCRMADO; SELECT TOP 10 * FROM dbo.Empresas;"
+        echo ''
+        echo '*** Contatos ***'
+        docker exec sqlsrvcontainer /opt/mssql-tools18/bin/sqlcmd -S "127.0.0.1,1433" -U sa -P SqlServer2025! -d master -C -Q "USE BaseCRMADO; SELECT TOP 30 * FROM dbo.Contatos;"
+      condition: always() 
+      displayName: Exibir amostragem de registros criados na base BaseCRMADO
